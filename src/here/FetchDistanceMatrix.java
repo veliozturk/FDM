@@ -26,11 +26,11 @@ import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
 
 public class FetchDistanceMatrix {
-	public static String host = "192.168.1.24";
+	public static String host = "35.239.184.252";
 	public static String fetchQueueName = "optiyol-scenario-fetch";
 	public static String resultQueueName = "optiyol-scenario-result";
 	public static String errorQueueName = "optiyol-scenario-error";
-	public static int threadCount = 60;
+	public static int threadCount = 10;
 	public static int retryCount = 5;
 	public static int successCount = 0;
 	public static int errorCount = 0;
@@ -259,7 +259,7 @@ public class FetchDistanceMatrix {
 		FetchDistanceMatrix fdm = new FetchDistanceMatrix();
 		ConnectionFactory factory = new ConnectionFactory();
 		factory.setHost(host);
-		factory.setUsername("veli");factory.setPassword("laclos");
+		factory.setUsername("guest");factory.setPassword("guest");
 
 		if (threadCount > 1)
 			for (int qi = 1; qi < threadCount; qi++) {

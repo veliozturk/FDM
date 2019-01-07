@@ -30,7 +30,7 @@ public class FetchDistanceMatrix {
 	public static String fetchQueueName = "optiyol-scenario-fetch";
 	public static String resultQueueName = "optiyol-scenario-result";
 	public static String errorQueueName = "optiyol-scenario-error";
-	public static int threadCount = 10;
+	public static int threadCount = 20;
 	public static int retryCount = 5;
 	public static int successCount = 0;
 	public static int errorCount = 0;
@@ -204,7 +204,7 @@ public class FetchDistanceMatrix {
 					
 					//ERROR PREPARE
 					msg.setLength(0);
-					msg.append(scenarioId).append(":").append(resultMap.size()).append(":e");//scenarioId:[startLocationId-destinationLocationId];
+					msg.append(scenarioId).append(":").append(locPairKeyz.size()).append(":e");//scenarioId:[startLocationId-destinationLocationId];
 					for (String key : locPairKeyz) {
 						ix = key.indexOf('-');
 						String startId = startMap.get(new Integer(key.substring(0, ix)));

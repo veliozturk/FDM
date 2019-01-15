@@ -1,15 +1,6 @@
 package here;
 
-import com.rabbitmq.client.ConnectionFactory;
-import com.rabbitmq.client.Connection;
-
-import java.io.BufferedReader;
-import java.io.DataOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -21,22 +12,38 @@ import org.json.JSONObject;
 
 import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.Channel;
+import com.rabbitmq.client.Connection;
+import com.rabbitmq.client.ConnectionFactory;
 import com.rabbitmq.client.Consumer;
 import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
 
+import util.HttpUtil;
+import util.RedisUtil;
+
 public class FetchDistanceMatrix {
-	public static String host = "35.239.184.252";
-	public static String fetchQueueName = "optiyol-scenario-fetch";
-	public static String resultQueueName = "optiyol-scenario-result";
-	public static String errorQueueName = "optiyol-scenario-error";
-	public static int threadCount = 20;
+	public static String rabbitHost = "35.239.184.252"; //rabbitmq
+	public static String rabbitUsername = "guest";
+	public static String rabbitPassword = "guest";
+	
+	public static String fetchQueue = "optiyol-scenario-fetch";
+	public static String resultQueue = "optiyol-scenario-result";
+	public static String errorQueue = "optiyol-scenario-error";
+	public static String callbackQueue = "optiyol-scenario-callback";
+	public static int threadCount = 1;
 	public static int retryCount = 5;
 	public static int successCount = 0;
 	public static int errorCount = 0;
 	public static int requestCount = 0;
 	public static long totalTime = 0;
 	public static long restTime = 0;
+
+	public static String redisHost = "35.226.30.186";//redis
+	public static String redisUsername = null;
+	public static String redisPassword = null;
+	
+	public static Map paramMap = new HashMap();
+	public static boolean debug = false;
 
 	public Consumer getDefaultConsumer(Channel channel, String threadId) {
 		System.out.println(" [FETCH] Waiting for messages. " + threadId);
@@ -55,7 +62,12 @@ public class FetchDistanceMatrix {
 				try {
 					long startTime = System.currentTimeMillis();
 					String message = new String(body, "UTF-8"); //scenarioId:[startLocationId:lat,lon]x[destinationLocationId:lat,lon]
-					if(false) System.out.println(threadId + " [received: "+message.length()+"] '" + message.substring(0,50)+ "...'");
+					if(message.startsWith("icb-kill")){
+						channel.basicPublish("", fetchQueue, null, message.getBytes("UTF-8"));
+						channel.basicCancel(message);
+						return;
+					}
+					if(debug) System.out.println(threadId + " [received: "+message.length()+"] '" + message.substring(0,50)+ "...'");
 					int ix = message.indexOf(':');
 					int scenarioId = new Integer(message.substring(0, ix));
 					message = message.substring(ix + 1);
@@ -85,7 +97,7 @@ public class FetchDistanceMatrix {
 						s.append("&destination").append(qi).append("=").append(loc);
 					}
 					long startTime2 = System.currentTimeMillis();
-					String r = send(s.toString(), null, "GET");
+					String r = HttpUtil.send(s.toString(), null, "GET");
 					startTime2 = System.currentTimeMillis() - startTime2;
 					if (r != null && r.length() > 0) {
 						JSONObject json = new JSONObject(r);
@@ -116,7 +128,7 @@ public class FetchDistanceMatrix {
 					}
 
 					for(int rc=0;!locPairKeyz.isEmpty() && rc<retryCount;rc++)try{ //error retry
-						System.out.println(reqNum + ".MQ Retry " + (rc+1));
+						if(debug)System.out.println(reqNum + ".MQ Retry " + (rc+1));
 						startErrorKeyz.clear();destinationErrorKeyz.clear();
 						for(String key:locPairKeyz){
 							String[] kk = key.split("-");
@@ -144,7 +156,7 @@ public class FetchDistanceMatrix {
 							s.append("&destination").append(cnt).append("=").append(loc);
 							destinationErrorKeyMap[cnt++] = qi;
 						}
-						r = send(s.toString(), null, "GET");
+						r = HttpUtil.send(s.toString(), null, "GET");
 						
 						if (r != null && r.length() > 0) {
 							JSONObject json = new JSONObject(r);
@@ -180,8 +192,8 @@ public class FetchDistanceMatrix {
 						}
 						
 					} catch(Exception ee){
-						ee.printStackTrace();
-						System.out.println("MQ Retry Error: " + ee.getMessage());
+//						if(debug)ee.printStackTrace();
+						System.err.println("MQ Retry Error: " + ee.getMessage());
 					}
 
 
@@ -198,7 +210,8 @@ public class FetchDistanceMatrix {
 					errorCount += locPairKeyz.size();
 					if(msg.charAt(msg.length()-1)==';'){
 						msg.setLength(msg.length()-1);
-						channel.basicPublish("", resultQueueName, null, msg.toString().getBytes("UTF-8"));
+						channel.basicPublish("", resultQueue, null, msg.toString().getBytes("UTF-8"));
+						RedisUtil.rpush(redisHost, resultQueue, msg.toString());
 						System.out.println(reqNum+". "+threadId+"/"+scenarioId + " [success: "+(System.currentTimeMillis()-startTime)+"ms / "+startTime2+"ms / " +msg.length()+ "b] "+successCount+" / "+errorCount+" : AVGS: "+ (totalTime/requestCount) + ":" + (restTime/requestCount) +" '" + msg.toString().substring(0, 30) +"...'");
 					}
 					
@@ -213,26 +226,31 @@ public class FetchDistanceMatrix {
 					}
 					if(msg.charAt(msg.length()-1)==';'){
 						msg.setLength(msg.length()-1);
-						channel.basicPublish("", resultQueueName, null, msg.toString().getBytes("UTF-8"));
-						System.out.println(reqNum+". "+threadId+"/"+scenarioId + " [error] '" + msg.toString().substring(0, 30) +"...'");
+						channel.basicPublish("", resultQueue, null, msg.toString().getBytes("UTF-8"));
+						RedisUtil.rpush(redisHost, resultQueue, msg.toString());
+						System.err.println(reqNum+". "+threadId+"/"+scenarioId + " [error] '" + msg.toString().substring(0, 30) +"...'");
 					}
 
 					// System.out.println(threadId+"/"+scenarioId + " [s] '" +
 					// s.toString() + "'");
 					//System.out.println(threadId + "/" + scenarioId + " [" + locPairKeyz.size() + "] " + r);
 				} catch (Exception e) {
-					System.out.println("MQ Error: " + e.getMessage());
+					System.err.println("MQ Error: " + e.getMessage());
 				}
 
 			}
 		};
 	}
+	
+	public static int getCount(){
+		return 0;
+	}
 
 	public static void main(String[] args) throws IOException, TimeoutException {
-		if (args != null && args.length > 0) {
+/*		if (args != null && args.length > 0) {
 			threadCount = new Integer(args[0]);
 			if (args.length > 1) {
-				host = args[1];
+				rabbitHost = args[1];
 			}
 			if (args.length > 2) {
 				fetchQueueName = args[2];
@@ -243,23 +261,52 @@ public class FetchDistanceMatrix {
 			if (args.length > 4) {
 				errorQueueName = args[4];
 			}
+		} */
+		
+		if (args != null && args.length > 0) {
+			for (int qi = 0; qi < args.length; qi++) {
+				String[] kv = args[qi].replace('=', ',').split(",");
+				if (kv.length > 1) {
+					if (kv[0].equals("redis"))
+						redisHost = kv[1];
+					else if (kv[0].equals("rabbit"))
+						rabbitHost = kv[1];
+					else if (kv[0].equals("threadCount"))
+						threadCount = Integer.parseInt(kv[1]);
+					else if (kv[0].equals("fetchQueue"))
+						fetchQueue = kv[1];
+					else if (kv[0].equals("resultQueue"))
+						resultQueue = kv[1];
+					else if (kv[0].equals("callbackQueue"))
+						callbackQueue = kv[1];
+					else if (kv[0].equals("errorQueue"))
+						errorQueue = kv[1];
+					else if (kv[0].equals("redisUsername"))
+						redisUsername = kv[1];
+					else if (kv[0].equals("redisPassword"))
+						redisPassword = kv[1];
+					else if (kv[0].equals("rabbitUsername"))
+						rabbitUsername = kv[1];
+					else if (kv[0].equals("rabbitPassword"))
+						rabbitPassword = kv[1];
+					paramMap.put(kv[0], kv[1]);
+				} else
+					paramMap.put(kv[0], "1");
+			}
 		}
-		System.out.println("MQ thread count / host / fetch queue / result queue / error queue");
-		System.out.println(
-				threadCount + " / " + host + " / " + fetchQueueName + " / " + resultQueueName + " / " + errorQueueName);
-/*
-		ConnectionFactory factory = new ConnectionFactory();
-		factory.setHost(host);
-		Connection connection = factory.newConnection();
-		Channel channel = connection.createChannel();
+		debug = paramMap.containsKey("debug");
 
-		channel.queueDeclare(fetchQueueName, false, false, false, null);
-		channel.queueDeclare(resultQueueName, false, false, false, null);
-		channel.queueDeclare(errorQueueName, false, false, false, null);*/
+		System.out.println("MQ thread count / host / fetch queue / result queue / error queue");
+		System.out.println(threadCount + " / " + rabbitHost + " / " + fetchQueue + " / " + resultQueue + " / " + errorQueue);
+
+
 		FetchDistanceMatrix fdm = new FetchDistanceMatrix();
 		ConnectionFactory factory = new ConnectionFactory();
-		factory.setHost(host);
-		factory.setUsername("guest");factory.setPassword("guest");
+		factory.setHost(rabbitHost);
+		if(rabbitUsername!=null){
+			factory.setUsername(rabbitUsername);
+			factory.setPassword(rabbitPassword);
+		}
 
 		if (threadCount > 1)
 			for (int qi = 1; qi < threadCount; qi++) {
@@ -270,11 +317,11 @@ public class FetchDistanceMatrix {
 							Connection connection = factory.newConnection();
 							Channel channel = connection.createChannel();
 
-							channel.queueDeclare(fetchQueueName, false, false, false, null);
-							channel.queueDeclare(resultQueueName, false, false, false, null);
-							channel.queueDeclare(errorQueueName, false, false, false, null);
+							channel.queueDeclare(fetchQueue, false, false, false, null);
+							channel.queueDeclare(resultQueue, false, false, false, null);
+							channel.queueDeclare(errorQueue, false, false, false, null);
 							Consumer consumer = new FetchDistanceMatrix().getDefaultConsumer(channel, threadId);
-							channel.basicConsume(fetchQueueName, true, consumer);
+							channel.basicConsume(fetchQueue, true, consumer);
 						} catch (Exception e) {
 							e.printStackTrace();
 						}
@@ -285,59 +332,14 @@ public class FetchDistanceMatrix {
 		Connection connection = factory.newConnection();
 		Channel channel = connection.createChannel();
 
-		channel.queueDeclare(fetchQueueName, false, false, false, null);
-		channel.queueDeclare(resultQueueName, false, false, false, null);
-		channel.queueDeclare(errorQueueName, false, false, false, null);
+		channel.queueDeclare(fetchQueue, false, false, false, null);
+		channel.queueDeclare(resultQueue, false, false, false, null);
+		channel.queueDeclare(errorQueue, false, false, false, null);
 
 		Consumer consumer = fdm.getDefaultConsumer(channel, "thread-0");
-		channel.basicConsume(fetchQueueName, true, consumer);
+		channel.basicConsume(fetchQueue, true, consumer);
 
 	}
 
-	public static String send(String targetURL, String urlParameters, String method) {
-		HttpURLConnection connection = null;
-		try {
-			URL url = new URL(targetURL);
-			connection = (HttpURLConnection) url.openConnection();
-			connection.setRequestMethod(method);
-
-			connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8");
-			connection.setRequestProperty("Content-Language", "en-EN");
-
-			connection.setUseCaches(false);
-			connection.setDoInput(true);
-			connection.setDoOutput(true);
-
-			// Send request
-			if (urlParameters != null && urlParameters.length() > 0) {
-				DataOutputStream wr = new DataOutputStream(connection.getOutputStream());
-				wr.write(urlParameters.getBytes("UTF-8"));
-				wr.flush();
-				wr.close();
-			}
-
-			// Get Response
-			InputStream is = connection.getResponseCode() >= 200 && connection.getResponseCode() < 300
-					? connection.getInputStream() : connection.getErrorStream();
-			BufferedReader rd = new BufferedReader(new InputStreamReader(is, "UTF-8"));
-			String line;
-			StringBuilder response = new StringBuilder();
-			while ((line = rd.readLine()) != null) {
-				response.append(line);
-				response.append('\r');
-			}
-			rd.close();
-			return response.toString();
-
-		} catch (Exception e) {
-			return null;
-
-			// throw ne;
-		} finally {
-			if (connection != null) {
-				connection.disconnect();
-			}
-		}
-	}
 
 }

@@ -18,6 +18,7 @@ import com.rabbitmq.client.Consumer;
 import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
 
+import util.GenericUtil;
 import util.HttpUtil;
 import util.RedisUtil;
 
@@ -30,7 +31,7 @@ public class FetchDistanceMatrix {
 	public static String resultQueue = "optiyol-scenario-result";
 	public static String errorQueue = "optiyol-scenario-error";
 	public static String callbackQueue = "optiyol-scenario-callback";
-	public static int threadCount = 1;
+	public static int threadCount = 10;
 	public static int retryCount = 5;
 	public static int successCount = 0;
 	public static int errorCount = 0;
@@ -64,7 +65,7 @@ public class FetchDistanceMatrix {
 					String message = new String(body, "UTF-8"); //scenarioId:[startLocationId:lat,lon]x[destinationLocationId:lat,lon]
 					if(message.startsWith("icb-kill")){
 						channel.basicPublish("", fetchQueue, null, message.getBytes("UTF-8"));
-						channel.basicCancel(message);
+						channel.basicCancel(consumerTag);
 						return;
 					}
 					if(debug) System.out.println(threadId + " [received: "+message.length()+"] '" + message.substring(0,50)+ "...'");
@@ -210,8 +211,14 @@ public class FetchDistanceMatrix {
 					errorCount += locPairKeyz.size();
 					if(msg.charAt(msg.length()-1)==';'){
 						msg.setLength(msg.length()-1);
-						channel.basicPublish("", resultQueue, null, msg.toString().getBytes("UTF-8"));
-						RedisUtil.rpush(redisHost, resultQueue, msg.toString());
+						if(!GenericUtil.isEmpty(resultQueue))
+							channel.basicPublish("", resultQueue, null, msg.toString().getBytes("UTF-8"));
+						if(!GenericUtil.isEmpty(redisHost))try{
+							long rlen = RedisUtil.rpush(redisHost, fetchQueue, msg.toString());
+							if(debug)System.out.println(reqNum+". "+" Redis " + rlen);
+						}catch(Exception re){
+							System.err.println("Redis Error " + re.getMessage());
+						}
 						System.out.println(reqNum+". "+threadId+"/"+scenarioId + " [success: "+(System.currentTimeMillis()-startTime)+"ms / "+startTime2+"ms / " +msg.length()+ "b] "+successCount+" / "+errorCount+" : AVGS: "+ (totalTime/requestCount) + ":" + (restTime/requestCount) +" '" + msg.toString().substring(0, 30) +"...'");
 					}
 					
@@ -226,8 +233,14 @@ public class FetchDistanceMatrix {
 					}
 					if(msg.charAt(msg.length()-1)==';'){
 						msg.setLength(msg.length()-1);
+						if(!GenericUtil.isEmpty(resultQueue))
 						channel.basicPublish("", resultQueue, null, msg.toString().getBytes("UTF-8"));
-						RedisUtil.rpush(redisHost, resultQueue, msg.toString());
+						if(!GenericUtil.isEmpty(redisHost))try{
+							long rlen = RedisUtil.rpush(redisHost, fetchQueue, msg.toString());
+							if(debug)System.out.println(reqNum+". "+" Redis ERROR " + rlen);
+						}catch(Exception re){
+							System.err.println("Redis Error " + re.getMessage());
+						}
 						System.err.println(reqNum+". "+threadId+"/"+scenarioId + " [error] '" + msg.toString().substring(0, 30) +"...'");
 					}
 
